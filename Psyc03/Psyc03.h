@@ -165,7 +165,7 @@ inline Psyc03::Psyc03(Motherboard9 *device){
   this->patchCords[3] = new AudioConnection(*this->envelope1, 0, *this->mixer1, 0);
   this->patchCords[4] = new AudioConnection(*this->dc2, *this->envelope3);
   this->patchCords[5] = new AudioConnection(*this->sine_fm, *this->envelope2);
-  this->patchCords[6] = new AudioConnection(*this->mixer1, 0, *this->sine_fm, 1);
+  this->patchCords[6] = new AudioConnection(*this->mixer1, 0, *this->sine_fm, 0);
   this->patchCords[7] = new AudioConnection(*this->envelope3, 0, *this->filter, 1);
   this->patchCords[8] = new AudioConnection(*this->envelope2, 0, *this->filter, 0);
   this->patchCords[9] = new AudioConnection(*this->filter, 0, *this->output, 0);
