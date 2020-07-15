@@ -7,6 +7,9 @@
 class Motherboard9{
   
   private:
+    static Motherboard9 *instance;
+    Motherboard9();
+    
     byte currentRow = 0;
     byte currentLed = 0;
     byte currentInput = 0;
@@ -94,8 +97,8 @@ class Motherboard9{
     void printLeds();
     
   public:
-    Motherboard9(byte *inputs);
-    void init();
+    static Motherboard9 *getInstance();
+    void init(byte *inputs);
     void update();
     void setDisplay(byte ledIndex, byte ledStatus);
     void resetDisplay();
@@ -106,14 +109,15 @@ class Motherboard9{
     byte getMidiChannel();
 };
 
+// Instance pre init
+Motherboard9 * Motherboard9::instance = nullptr;
+
 /**
  * Constructor
  */
-inline Motherboard9::Motherboard9(byte *inputs){
-  this->columnsNumber = columnsNumber;
+inline Motherboard9::Motherboard9(){
   this->ioNumber = 3*this->columnsNumber;
 
-  this->inputs = new byte[this->ioNumber];
   this->leds = new byte[this->ioNumber];
   this->buttons = new bool[this->ioNumber];
   this->potentiometers = new unsigned int[this->ioNumber];
@@ -139,9 +143,24 @@ inline Motherboard9::Motherboard9(byte *inputs){
 }
 
 /**
+ * Singleton instance
+ */
+inline static Motherboard9 *Motherboard9::getInstance()    {
+  if (!instance)
+     instance = new Motherboard9;
+  return instance;
+}
+
+/**
  * Init
  */
-inline void Motherboard9::init(){
+inline void Motherboard9::init(byte *inputs){
+  // Init of the inputs
+  this->inputs = new byte[this->ioNumber];
+  for(byte i = 0; i < this->ioNumber; i++){
+    this->inputs[i] = inputs[i];
+  }
+  
   // Main multiplexer
   pinMode(2, OUTPUT);
   pinMode(3, OUTPUT);
@@ -215,7 +234,7 @@ inline void Motherboard9::update(){
 
   // Debug
   if (this->clockDebug >= 100) {
-//    this->printInputs();
+    this->printInputs();
 //    this->printLeds();
     this->clockDebug = 0;
   }

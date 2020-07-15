@@ -2,6 +2,8 @@
 #define Psyc03_h
 
 #include <Audio.h>
+#include <MIDI.h>
+MIDI_CREATE_DEFAULT_INSTANCE(); // MIDI library init
 
 #include "Motherboard9.h"
 
@@ -43,6 +45,9 @@ AudioConnection          patchCord13(filter, 0, usb1, 1);
 class Psyc03{
   
   private:
+    static Psyc03 *instance;
+    Psyc03();
+    
     AudioSynthWaveformDc        *dc1;
     AudioSynthWaveformSine      *sine1;
     AudioSynthWaveformSine      *lfo;
@@ -90,19 +95,24 @@ class Psyc03{
 
     
   public:
-    Psyc03(Motherboard9 *device);
-
-    void noteOn(byte midiNote);
-    void noteOff(byte midiNote);
+    static Psyc03 *getInstance();
+    void init();
+    static void noteOn(byte channel, byte note, byte velocity);
+    static void noteOff(byte channel, byte note, byte velocity);
     void stop();
     void update();
     AudioMixer4 * getOutput();
 };
 
+// Singleton pre init
+Psyc03 * Psyc03::instance = nullptr;
+
 /**
  * Constructor
  */
-inline Psyc03::Psyc03(Motherboard9 *device){
+inline Psyc03::Psyc03(){
+  this->device = Motherboard9::getInstance();
+  
   this->peak1 = new AudioAnalyzePeak();
 
   this->lfo = new AudioSynthWaveformSine();
@@ -171,24 +181,46 @@ inline Psyc03::Psyc03(Motherboard9 *device){
   this->patchCords[9] = new AudioConnection(*this->filter, 0, *this->output, 0);
 }
 
+/**
+ * Singleton instance
+ */
+inline static Psyc03 *Psyc03::getInstance()    {
+  if (!instance)
+     instance = new Psyc03;
+  return instance;
+}
+
+inline void Psyc03::init(){
+  // 0 = empty, 1 = button, 2 = potentiometer, 3 = encoder
+  byte controls[9] = {2,2,2, 2,2,2, 2,2,2};
+  this->device->init(controls);
+  
+  MIDI.setHandleNoteOn(noteOn);
+  MIDI.setHandleNoteOff(noteOff);
+  MIDI.begin(MIDI_CHANNEL_OMNI);
+  usbMIDI.setHandleNoteOn(noteOn);
+  usbMIDI.setHandleNoteOff(noteOff);
+}
 
 /**
  * Note on
  */
-inline void Psyc03::noteOn(byte note){
+inline static void Psyc03::noteOn(byte channel, byte note, byte velocity){
   float freq = 440.0 * powf(2.0, (float)(note - 69) * 0.08333333);
 
-  this->sine_fm->frequency(this->tune + freq); //lfoPeak*1000
-  this->envelope1->noteOn();
-  this->envelope2->noteOn();
-  this->envelope3->noteOn();
+  getInstance()->sine_fm->frequency(getInstance()->tune + freq); //lfoPeak*1000
+  getInstance()->envelope1->noteOn();
+  getInstance()->envelope2->noteOn();
+  getInstance()->envelope3->noteOn();
+  
+  getInstance()->device->setDisplay(0, 1);
 }
 
 /**
  * Note off
  */
-inline void Psyc03::noteOff(byte note){
- 
+inline static void Psyc03::noteOff(byte channel, byte note, byte velocity){
+  getInstance()->device->setDisplay(0, 0);
 }
 
 /**
@@ -203,6 +235,11 @@ inline AudioMixer4 * Psyc03::getOutput(){
  * Update
  */
 inline void Psyc03::update(){
+  this->device->update();
+  
+  MIDI.read();
+  usbMIDI.read();
+  
   if(this->clockUpdate > this->updateMillis){
    
     // Shape
