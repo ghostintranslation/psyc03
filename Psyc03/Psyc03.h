@@ -197,7 +197,7 @@ inline void Psyc03::init(){
   
   MIDI.setHandleNoteOn(noteOn);
   MIDI.setHandleNoteOff(noteOff);
-  MIDI.begin(MIDI_CHANNEL_OMNI);
+  MIDI.begin(this->device->getMidiChannel());
   usbMIDI.setHandleNoteOn(noteOn);
   usbMIDI.setHandleNoteOff(noteOff);
 }
@@ -237,8 +237,8 @@ inline AudioMixer4 * Psyc03::getOutput(){
 inline void Psyc03::update(){
   this->device->update();
   
-  MIDI.read();
-  usbMIDI.read();
+  MIDI.read(this->device->getMidiChannel());
+  usbMIDI.read(this->device->getMidiChannel());
   
   if(this->clockUpdate > this->updateMillis){
    
