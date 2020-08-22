@@ -102,6 +102,17 @@ class Psyc03{
     void stop();
     void update();
     AudioMixer4 * getOutput();
+
+    // Callbacks
+    static void onShapeChange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onTuneChange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onSweepCHange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onFmChange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onAttackChange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onDecayChange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onCutoffChange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onSpeedChange(byte inputIndex, unsigned int value, int diffToPrevious);
+    static void onDepth(byte inputIndex, unsigned int value, int diffToPrevious);
 };
 
 // Singleton pre init
@@ -184,7 +195,7 @@ inline Psyc03::Psyc03(){
 /**
  * Singleton instance
  */
-inline static Psyc03 *Psyc03::getInstance()    {
+inline Psyc03 *Psyc03::getInstance()    {
   if (!instance)
      instance = new Psyc03;
   return instance;
@@ -200,12 +211,22 @@ inline void Psyc03::init(){
   MIDI.begin(this->device->getMidiChannel());
   usbMIDI.setHandleNoteOn(noteOn);
   usbMIDI.setHandleNoteOff(noteOff);
+
+  this->device->setHandlePotentiometerChange(0, onShapeChange);
+  this->device->setHandlePotentiometerChange(1, onTuneChange);
+  this->device->setHandlePotentiometerChange(2, onSweepCHange);
+  this->device->setHandlePotentiometerChange(3, onFmChange);
+  this->device->setHandlePotentiometerChange(4, onAttackChange);
+  this->device->setHandlePotentiometerChange(5, onDecayChange);
+  this->device->setHandlePotentiometerChange(6, onCutoffChange);
+  this->device->setHandlePotentiometerChange(7, onSpeedChange);
+  this->device->setHandlePotentiometerChange(8, onDepth);
 }
 
 /**
  * Note on
  */
-inline static void Psyc03::noteOn(byte channel, byte note, byte velocity){
+inline void Psyc03::noteOn(byte channel, byte note, byte velocity){
   float freq = 440.0 * powf(2.0, (float)(note - 69) * 0.08333333);
 
   getInstance()->sine_fm->frequency(getInstance()->tune + freq); //lfoPeak*1000
@@ -213,14 +234,14 @@ inline static void Psyc03::noteOn(byte channel, byte note, byte velocity){
   getInstance()->envelope2->noteOn();
   getInstance()->envelope3->noteOn();
   
-  getInstance()->device->setDisplay(0, 1);
+  getInstance()->device->setLED(0, 1);
 }
 
 /**
  * Note off
  */
-inline static void Psyc03::noteOff(byte channel, byte note, byte velocity){
-  getInstance()->device->setDisplay(0, 0);
+inline void Psyc03::noteOff(byte channel, byte note, byte velocity){
+  getInstance()->device->setLED(0, 0);
 }
 
 /**
@@ -241,135 +262,6 @@ inline void Psyc03::update(){
   usbMIDI.read(this->device->getMidiChannel());
   
   if(this->clockUpdate > this->updateMillis){
-   
-    // Shape
-    byte shape = map(
-      this->device->getInput(
-      this->shapeInputIndex), 
-      this->device->getAnalogMinValue(), 
-      this->device->getAnalogMaxValue(),
-      0,
-      2
-    );
-    
-    if(this->shape != shape){
-      this->shape = shape;
-      this->sine_fm->begin(shape);
-    } 
-
-    // Tune
-    unsigned int tune = (float)map(
-      (float)this->device->getInput(
-      this->tuneInputIndex), 
-      this->device->getAnalogMinValue(), 
-      this->device->getAnalogMaxValue(),
-      0,
-      500
-    );
-    
-    if(this->tune != tune){
-      this->tune = tune;
-    } 
-
-    // Sweep
-    float sweep = (float)map(
-      (float)this->device->getInput(
-      this->sweepInputIndex), 
-      this->device->getAnalogMinValue(), 
-      this->device->getAnalogMaxValue(),
-      0,
-      1
-    );
-    
-    if(this->sweep != sweep){
-      this->sweep = sweep;
-      this->mixer1->gain(0, sweep);
-    } 
-  
-    // FM
-    int fm = this->device->getInput(this->fmInputIndex);
-    if(this->fm != fm){
-      this->fm = fm;
-      float fmLevel = map((float)fm, 0, 1023, 0, .6);
-      this->sine1->frequency(fm);
-      this->mixer1->gain(1, fmLevel);
-    }
-    
-    // Attack
-    int attack = map(
-      this->device->getInput(this->attackInputIndex),
-      this->device->getAnalogMinValue(),
-      this->device->getAnalogMaxValue(),
-      0,
-      500
-    );
-    
-    if(this->attack != attack){
-      this->attack = attack;
-      this->envelope2->attack(attack);
-      this->envelope3->attack(attack);
-    }
-  
-    // Decay
-    int decay = map(
-      this->device->getInput(this->decayInputIndex),
-      this->device->getAnalogMinValue(),
-      this->device->getAnalogMaxValue(),
-      0,
-      500
-    );
-  
-    if(this->decay != decay){
-      this->decay = decay;
-      this->envelope1->decay(decay);
-      this->envelope2->decay(decay);
-      this->envelope3->decay(decay);
-    }
-
-    // Cutoff
-    int cutoff = map(
-      this->device->getInput(
-      this->cutoffInputIndex), 
-      this->device->getAnalogMinValue(), 
-      this->device->getAnalogMaxValue(),
-      0,
-      2000
-    );
-    
-    if(this->cutoff != cutoff){
-      this->cutoff = cutoff;
-    } 
-
-    // Speed
-    float speed = (float)map(
-      (float)this->device->getInput(
-      this->speedInputIndex), 
-      this->device->getAnalogMinValue(), 
-      this->device->getAnalogMaxValue(),
-      0,
-      10
-    );
-    
-    if(this->speed != speed){
-      this->speed = speed;
-      this->lfo->frequency(speed);
-    } 
-
-    // Depth
-    float depth = (float)map(
-      (float)this->device->getInput(
-      this->depthInputIndex), 
-      this->device->getAnalogMinValue(), 
-      this->device->getAnalogMaxValue(),
-      0,
-      1
-    );
-    
-    if(this->depth != depth){
-      this->depth = depth;
-      this->lfo->amplitude(depth);
-    } 
-
     // Filter folowwing the envelope
     if (this->peak1->available()) {
       this->lfoPeak = this->peak1->read();
@@ -378,5 +270,141 @@ inline void Psyc03::update(){
     
     this->clockUpdate = 0;
   }
+}
+
+
+/**
+ * On Shape Change
+ */
+inline void Psyc03::onShapeChange(byte inputIndex, unsigned int value, int diffToPrevious){
+
+  byte shape = map(
+    value, 
+    getInstance()->device->getAnalogMinValue(), 
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    2
+  );
+    
+  getInstance()->sine_fm->begin(shape);
+}
+
+/**
+ * On Tune Change
+ */
+inline void Psyc03::onTuneChange(byte inputIndex, unsigned int value, int diffToPrevious){
+  // Tune
+  unsigned int tune = map(
+    value, 
+    getInstance()->device->getAnalogMinValue(), 
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    500
+  );
+    
+  getInstance()->tune = tune;
+}
+
+/**
+ * On Sweep Change
+ */
+inline void Psyc03::onSweepCHange(byte inputIndex, unsigned int value, int diffToPrevious){
+  // Sweep
+  float sweep = (float)map(
+    (float)value, 
+    getInstance()->device->getAnalogMinValue(), 
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    1
+  );
+
+  getInstance()->mixer1->gain(0, sweep);
+}
+
+/**
+ * On FM Change
+ */
+inline void Psyc03::onFmChange(byte inputIndex, unsigned int value, int diffToPrevious){
+  float fmLevel = map((float)value, 0, 1023, 0, .6);
+  getInstance()->sine1->frequency(value);
+  getInstance()->mixer1->gain(1, fmLevel);
+}
+
+/**
+ * On Attack Change
+ */
+inline void Psyc03::onAttackChange(byte inputIndex, unsigned int value, int diffToPrevious){
+  int attack = map(
+    value,
+    getInstance()->device->getAnalogMinValue(),
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    500
+  );
+  
+  getInstance()->envelope2->attack(attack);
+  getInstance()->envelope3->attack(attack);
+}
+
+/**
+ * On Decay Change
+ */
+inline void Psyc03::onDecayChange(byte inputIndex, unsigned int value, int diffToPrevious){
+  int decay = map(
+    value,
+    getInstance()->device->getAnalogMinValue(),
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    500
+  );
+
+  getInstance()->envelope1->decay(decay);
+  getInstance()->envelope2->decay(decay);
+  getInstance()->envelope3->decay(decay);
+}
+
+/**
+ * On Cutoff Change
+ */
+inline void Psyc03::onCutoffChange(byte inputIndex, unsigned int value, int diffToPrevious){
+  int cutoff = map(
+    value, 
+    getInstance()->device->getAnalogMinValue(), 
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    2000
+  );
+  
+  getInstance()->cutoff = cutoff; 
+}
+
+/**
+ * On Speed Change
+ */
+inline void Psyc03::onSpeedChange(byte inputIndex, unsigned int value, int diffToPrevious){
+  float speed = (float)map(
+    (float)value, 
+    getInstance()->device->getAnalogMinValue(), 
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    10
+  );
+    
+  getInstance()->lfo->frequency(speed);
+}
+
+/**
+ * On Depth Change
+ */
+inline void Psyc03::onDepth(byte inputIndex, unsigned int value, int diffToPrevious){
+  float depth = (float)map(
+    (float)value, 
+    getInstance()->device->getAnalogMinValue(), 
+    getInstance()->device->getAnalogMaxValue(),
+    0,
+    1
+  );
+  
+  getInstance()->lfo->amplitude(depth);
 }
 #endif

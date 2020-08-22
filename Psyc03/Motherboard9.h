@@ -3,6 +3,7 @@
 
 /*
  * Motherboard9
+ * v1.1.1
  */
 class Motherboard9{
   
@@ -25,11 +26,12 @@ class Motherboard9{
     bool *buttons;
     // Potentiometers
     unsigned int *potentiometers;
+    unsigned int *potentiometersPrevious;
     // For smoothing purposes
     unsigned int *potentiometersTemp;
-    byte *potentiometersReadings; 
-    
-    // Encoders 
+    byte *potentiometersReadings;
+
+    // Encoders
     int *encoders;
     bool *encodersSwitch;
     byte *encodersState;
@@ -78,6 +80,23 @@ class Motherboard9{
     // Inputs clock
     const unsigned int intervalInputs = 100;
     elapsedMicros clockInputs;
+
+    // Callbacks
+    using PressDownCallback = void (*)(byte);
+    PressDownCallback *inputsPressDownCallback;
+    using LongPressDownCallback = void (*)(byte);
+    LongPressDownCallback *inputsLongPressDownCallback;
+    using PressUpCallback = void (*)(byte);
+    PressUpCallback *inputsPressUpCallback;
+    using LongPressUpCallback = void (*)(byte);
+    LongPressUpCallback *inputsLongPressUpCallback;
+    elapsedMillis *inputsPressTime;
+    bool *inputsLongPressDownFired;
+    using PotentiometerChangeCallback = void (*)(byte, unsigned int, int);
+    PotentiometerChangeCallback *inputsPotentiometerChangeCallback;
+    using RotaryChangeCallback = void (*)(bool);
+    RotaryChangeCallback *inputsRotaryChangeCallback;
+
     void updateDisplay();
     void iterateDisplay();
     void iterateInputs();
@@ -100,13 +119,23 @@ class Motherboard9{
     static Motherboard9 *getInstance();
     void init(byte *inputs);
     void update();
-    void setDisplay(byte ledIndex, byte ledStatus);
-    void resetDisplay();
+    void setLED(byte ledIndex, byte ledStatus);
+    void setAllLED(unsigned int binary, byte ledStatus);
+    void toggleLED(byte index);
+    void resetAllLED();
     int getInput(byte index);
     bool getEncoderSwitch(byte index);
     int getAnalogMaxValue();
     int getAnalogMinValue();
     byte getMidiChannel();
+    
+    // Callbacks
+    void setHandlePressDown(byte inputIndex, PressDownCallback fptr);
+    void setHandleLongPressDown(byte inputIndex, LongPressDownCallback fptr);
+    void setHandlePressUp(byte inputIndex, PressUpCallback fptr);
+    void setHandleLongPressUp(byte inputIndex, LongPressUpCallback fptr);
+    void setHandlePotentiometerChange(byte inputIndex, PotentiometerChangeCallback fptr);
+    void setHandleRotaryChange(byte inputIndex, RotaryChangeCallback fptr);
 };
 
 // Instance pre init
@@ -116,17 +145,27 @@ Motherboard9 * Motherboard9::instance = nullptr;
  * Constructor
  */
 inline Motherboard9::Motherboard9(){
-  this->ioNumber = 3*this->columnsNumber;
+  this->ioNumber = 3 * this->columnsNumber;
 
   this->inputs = new byte[this->ioNumber];
   this->leds = new byte[this->ioNumber];
+  this->ledsDuration = new unsigned int[this->ioNumber];
   this->buttons = new bool[this->ioNumber];
   this->potentiometers = new unsigned int[this->ioNumber];
+  this->potentiometersPrevious = new unsigned int[this->ioNumber];
   this->potentiometersTemp = new unsigned int[this->ioNumber];
   this->potentiometersReadings = new byte[this->ioNumber];
   this->encoders = new int[this->ioNumber];
   this->encodersState = new byte[this->ioNumber];
   this->encodersSwitch = new bool[this->ioNumber];
+  this->inputsPressDownCallback = new PressDownCallback[this->ioNumber];
+  this->inputsLongPressDownCallback = new PressDownCallback[this->ioNumber];
+  this->inputsPressUpCallback = new PressUpCallback[this->ioNumber];
+  this->inputsLongPressUpCallback = new PressUpCallback[this->ioNumber];
+  this->inputsPressTime = new elapsedMillis[this->ioNumber];
+  this->inputsLongPressDownFired = new bool[this->ioNumber];
+  this->inputsPotentiometerChangeCallback = new PotentiometerChangeCallback[this->ioNumber];
+  this->inputsRotaryChangeCallback = new RotaryChangeCallback[this->ioNumber];
 
   for(byte i = 0; i < this->ioNumber; i++){
     this->inputs[i] = 0;
@@ -134,11 +173,20 @@ inline Motherboard9::Motherboard9(){
     this->ledsDuration[i] = 0;
     this->buttons[i] = true;
     this->potentiometers[i] = 0;
+    this->potentiometersPrevious[i] = 0;
     this->potentiometersTemp[i] = 0;
     this->potentiometersReadings[i] = 0;
     this->encoders[i] = 0;
     this->encodersState[i] = 0;
     this->encodersSwitch[i] = true;
+    this->inputsPressDownCallback[i] = nullptr;
+    this->inputsLongPressDownCallback[i] = nullptr;
+    this->inputsPressUpCallback[i] = nullptr;
+    this->inputsLongPressUpCallback[i] = nullptr;
+    this->inputsPressTime[i] = 0;
+    this->inputsLongPressDownFired[i] = false;
+    this->inputsPotentiometerChangeCallback[i] = nullptr;
+    this->inputsRotaryChangeCallback[i] = nullptr;
   }
 
 }
@@ -146,7 +194,7 @@ inline Motherboard9::Motherboard9(){
 /**
  * Singleton instance
  */
-inline static Motherboard9 *Motherboard9::getInstance()    {
+inline Motherboard9 *Motherboard9::getInstance()    {
   if (!instance)
      instance = new Motherboard9;
   return instance;
@@ -185,12 +233,12 @@ inline void Motherboard9::init(byte *inputs){
   
   // Init sequence
   for(byte i = 0; i<this->ioNumber; i++){
-    this->setDisplay(i, 1);
+    this->setLED(i, 1);
     this->iterateDisplay();
     this->updateDisplay();
     delay(50);
   }
-  this->resetDisplay();
+  this->resetAllLED();
   this->updateDisplay();
 }
 
@@ -233,7 +281,7 @@ inline void Motherboard9::update(){
 
   // Debug
   if (this->clockDebug >= 100) {
-    this->printInputs();
+//    this->printInputs();
 //    this->printLeds();
     this->clockDebug = 0;
   }
@@ -336,56 +384,47 @@ inline void Motherboard9::updateDisplay(){
     this->setMainMuxOnLeds2();
   }
   
-//  if(this->clockDisplay > this->intervalDisplay / 2
-//  && this->clockDisplay < this->intervalDisplay / 1.75) {
-    byte r0 = bitRead(this->currentLed, 0);   
-    byte r1 = bitRead(this->currentLed, 1);    
-    byte r2 = bitRead(this->currentLed, 2);
-    digitalWrite(5, r0);
-    digitalWrite(9, r1);
-    digitalWrite(14, r2);
-//  }
+  byte r0 = bitRead(this->currentLed, 0);   
+  byte r1 = bitRead(this->currentLed, 1);    
+  byte r2 = bitRead(this->currentLed, 2);
+  digitalWrite(5, r0);
+  digitalWrite(9, r1);
+  digitalWrite(14, r2);
 
-//    digitalWrite(22, HIGH);
-    
-//  if(this->clockDisplay > this->intervalDisplay / 1.75) {
-    if(this->leds[this->currentLed] == 1){
-      // Solid light
+  if (this->leds[this->currentLed] == 1) {
+    // Solid light
+    digitalWrite(22, LOW);
+  } else if (this->leds[this->currentLed] == 2) {
+    // Slow flashing
+    digitalWrite(22, HIGH);
+    if (this->clockDisplayFlash % 400 > 200) {
       digitalWrite(22, LOW);
-    }else if(this->leds[this->currentLed] == 2){
-      // Slow flashing
-      digitalWrite(22, HIGH);
-      if(this->clockDisplayFlash%400 > 200){
-        digitalWrite(22, LOW);
-      }
-    }else if(this->leds[this->currentLed] == 3){
-      // Fast flashing
-      digitalWrite(22, HIGH);
-      if(this->clockDisplayFlash%200 > 100){
-        digitalWrite(22, LOW);
-      }
-    
-    }else if(this->leds[this->currentLed] == 4){
-      // Solid for 50 milliseconds
-      digitalWrite(22, LOW);
-      if(this->ledsDuration[this->currentLed]==0){
-        this->ledsDuration[this->currentLed] = (clockDisplayFlash + 50)%intervalDisplayFlash;
-      }
-      
-      if(this->clockDisplayFlash >= this->ledsDuration[this->currentLed]){
-        digitalWrite(22, HIGH);
-        this->leds[this->currentLed] = 0;
-        this->ledsDuration[this->currentLed] = 0;
-      }
-    }else if(this->leds[this->currentLed] == 5){
-      // Solid low birghtness
-      if(clockDisplayFlash%20 > 16){
-        digitalWrite(22, LOW);
-      }
-    }else{
-      digitalWrite(22, HIGH);
     }
-//  }
+  } else if (this->leds[this->currentLed] == 3) {
+    // Fast flashing
+    digitalWrite(22, HIGH);
+    if (this->clockDisplayFlash % 200 > 100) {
+      digitalWrite(22, LOW);
+    }
+  } else if (this->leds[this->currentLed] == 4) {
+    // Solid for 50 milliseconds
+    digitalWrite(22, LOW);
+    if (this->ledsDuration[this->currentLed] == 0) {
+      this->ledsDuration[this->currentLed] = (clockDisplayFlash + 50) % intervalDisplayFlash;
+    }
+    if (this->clockDisplayFlash >= this->ledsDuration[this->currentLed]) {
+      digitalWrite(22, HIGH);
+      this->leds[this->currentLed] = 0;
+      this->ledsDuration[this->currentLed] = 0;
+    }
+  } else if (this->leds[this->currentLed] == 5) {
+    // Solid low birghtness
+    if (clockDisplayFlash % 20 > 16) {
+      digitalWrite(22, LOW);
+    }
+  } else {
+    digitalWrite(22, HIGH);
+  }
 }
 
 
@@ -423,29 +462,95 @@ inline void Motherboard9::readCurrentInput(){
  * Get button value
  * @param byte inputeIndex The index of the input
  */
-inline void Motherboard9::readButton(byte inputIndex){
+inline void Motherboard9::readButton(byte inputIndex) {
   this->setMainMuxOnEncoders2();
-  
+
   byte rowNumber = inputIndex / this->columnsNumber;
 
-  for(byte i = 0; i < 3; i++){
-    if(i == rowNumber){
+  for (byte i = 0; i < 3; i++) {
+    if (i == rowNumber) {
       digitalWrite(15 + i, LOW);
-    }else{
+    } else {
       digitalWrite(15 + i, HIGH);
     }
   }
-  
+
   byte columnNumber = inputIndex % this->columnsNumber;
 
-  byte r0 = bitRead(columnNumber, 0);   
-  byte r1 = bitRead(columnNumber, 1);    
+  byte r0 = bitRead(columnNumber, 0);
+  byte r1 = bitRead(columnNumber, 1);
   byte r2 = bitRead(columnNumber, 2);
   digitalWrite(5, r0);
   digitalWrite(9, r1);
   digitalWrite(14, r2);
 
-  this->buttons[inputIndex] = digitalRead(22);
+  // Giving some time to the Mux and pins to switch
+  if (this->clockInputs > this->intervalInputs / 1.5) {
+    
+    // Reading the new value
+    bool newReading = digitalRead(22);
+
+    // If there is a short or a long press callback on that input
+    if(this->inputsPressDownCallback[inputIndex] != nullptr ||
+       this->inputsPressUpCallback[inputIndex] != nullptr ||
+       this->inputsLongPressDownCallback[inputIndex] != nullptr ||
+       this->inputsLongPressUpCallback[inputIndex] != nullptr){
+        
+      // Inverted logic, 0 = button pushed
+      // If previous value is not pushed and now is pushed
+      // So if it's pushed
+      if(this->buttons[inputIndex] && !newReading){ 
+        // Start the counter of that input
+        this->inputsPressTime[inputIndex] = 0;
+        this->inputsLongPressDownFired[inputIndex] = false;
+        
+        // If there is a short press down callback on that input, and there is no Long Press down
+        if(this->inputsLongPressDownCallback[inputIndex] == nullptr &&
+           this->inputsPressDownCallback[inputIndex] != nullptr){
+          this->inputsPressDownCallback[inputIndex](inputIndex);
+        }
+      }
+
+      // If it stayed pressed for 200ms and Long Press Down callback hasn't been fired yet
+      if(!this->buttons[inputIndex] && !newReading){ 
+        if(this->inputsPressTime[inputIndex] >= 200 && !this->inputsLongPressDownFired[inputIndex]){
+          
+          if(this->inputsLongPressDownCallback[inputIndex] != nullptr){
+            // Fire the callback
+            this->inputsLongPressDownCallback[inputIndex](inputIndex);
+            this->inputsLongPressDownFired[inputIndex] = true;
+          }
+        }
+      }
+
+      // If it's released
+      if(!this->buttons[inputIndex] && newReading){ 
+        // How long was it pressed
+        if(this->inputsPressTime[inputIndex] < 200){
+          // Short press
+          
+          // If there is a short press callback on that input
+          if(this->inputsPressUpCallback[inputIndex] != nullptr){
+            this->inputsPressUpCallback[inputIndex](inputIndex);
+          }
+        }else{
+          // Long press
+          
+          // If there is a long press callback on that input
+          if(this->inputsLongPressUpCallback[inputIndex] != nullptr){
+            this->inputsLongPressUpCallback[inputIndex](inputIndex);
+          }else if(this->inputsPressUpCallback[inputIndex] != nullptr){
+            // If the input was pressed for a long time but there is only a short press callback
+            // the short press callback should still be called
+            this->inputsPressUpCallback[inputIndex](inputIndex);
+          }
+        }
+      }
+    }
+  
+    // Updating the value
+    this->buttons[inputIndex] = newReading;
+  }
 }
 
 
@@ -453,15 +558,15 @@ inline void Motherboard9::readButton(byte inputIndex){
  * Get potentiometer value
  * @param byte inputeIndex The index of the input
  */
-inline void Motherboard9::readPotentiometer(byte inputIndex){
-  if(inputIndex < 8){
+inline void Motherboard9::readPotentiometer(byte inputIndex) {
+  if (inputIndex < 8) {
     this->setMainMuxOnPots();
-  }else{
+  } else {
     this->setMainMuxOnPots2();
   }
-  
-  byte r0 = bitRead(inputIndex, 0);   
-  byte r1 = bitRead(inputIndex, 1);    
+
+  byte r0 = bitRead(inputIndex, 0);
+  byte r1 = bitRead(inputIndex, 1);
   byte r2 = bitRead(inputIndex, 2);
   digitalWrite(5, r0);
   digitalWrite(9, r1);
@@ -473,27 +578,36 @@ inline void Motherboard9::readPotentiometer(byte inputIndex){
   if(this->potentiometersReadings[inputIndex] == 255){
     this->potentiometers[inputIndex] = this->potentiometersTemp[inputIndex] / 255; 
     this->potentiometers[inputIndex] = map(this->potentiometers[inputIndex], this->getAnalogMinValue(), this->getAnalogMaxValue(), 0, 1023);
-    this->potentiometers[inputIndex] = constrain(this->potentiometers[inputIndex], 0, 1023);
+    this->potentiometers[inputIndex] = constrain(this->potentiometers[inputIndex], (unsigned int)0, (unsigned int)1023);
+    
+    if(this->potentiometers[inputIndex] != this->potentiometersPrevious[inputIndex]){
+      // Calling the potentiometer callback if there is one
+      if(this->inputsPotentiometerChangeCallback[inputIndex] != nullptr){
+        this->inputsPotentiometerChangeCallback[inputIndex](inputIndex, this->potentiometers[inputIndex], this->potentiometers[inputIndex] - this->potentiometersPrevious[inputIndex] );
+      }
+    }
+    
     this->potentiometersReadings[inputIndex] = 0;
     this->potentiometersTemp[inputIndex] = 0;
+    this->potentiometersPrevious[inputIndex] = this->potentiometers[inputIndex];
   }
-  
+
 }
 
 /**
  * Get encoder value
  * @param byte inputeIndex The index of the input
  */
-inline void Motherboard9::readEncoder(byte inputIndex){
+inline void Motherboard9::readEncoder(byte inputIndex) {
   // Activating the right row in the matrix
   byte rowNumber = inputIndex / this->columnsNumber;
 
   // Setting the main multiplexer on encoders
-  if(this->clockInputs < this->intervalInputs / 10){
-    for(byte i = 0; i < 3; i++){
-      if(i == rowNumber){
+  if (this->clockInputs < this->intervalInputs / 10) {
+    for (byte i = 0; i < 3; i++) {
+      if (i == rowNumber) {
         digitalWrite(15 + i, LOW);
-      }else{
+      } else {
         digitalWrite(15 + i, HIGH);
       }
     }
@@ -505,11 +619,11 @@ inline void Motherboard9::readEncoder(byte inputIndex){
   byte muxPinA = columnNumber * 2;
   byte muxPinB = columnNumber * 2 + 1;
 
-  // Giving time for the multiplexer to switch to Pin A 
-  if(this->clockInputs > this->intervalInputs / 10
-  && this->clockInputs < this->intervalInputs / 6) {
-    byte r0 = bitRead(muxPinA, 0);   
-    byte r1 = bitRead(muxPinA, 1);    
+  // Giving time for the multiplexer to switch to Pin A
+  if (this->clockInputs > this->intervalInputs / 10
+      && this->clockInputs < this->intervalInputs / 6) {
+    byte r0 = bitRead(muxPinA, 0);
+    byte r1 = bitRead(muxPinA, 1);
     byte r2 = bitRead(muxPinA, 2);
     digitalWrite(5, r0);
     digitalWrite(9, r1);
@@ -517,24 +631,24 @@ inline void Motherboard9::readEncoder(byte inputIndex){
 
     this->currentEncPinA = digitalRead(22);
   }
-  
-   // Giving time for the multiplexer to switch to Pin B
-  if(this->clockInputs > this->intervalInputs / 6
-  && this->clockInputs < this->intervalInputs / 2){
-    int r0 = bitRead(muxPinB, 0);   
-    int r1 = bitRead(muxPinB, 1);    
+
+  // Giving time for the multiplexer to switch to Pin B
+  if (this->clockInputs > this->intervalInputs / 6
+      && this->clockInputs < this->intervalInputs / 2) {
+    int r0 = bitRead(muxPinB, 0);
+    int r1 = bitRead(muxPinB, 1);
     int r2 = bitRead(muxPinB, 2);
     digitalWrite(5, r0);
     digitalWrite(9, r1);
     digitalWrite(14, r2);
-    
+
     this->currentEncPinB = digitalRead(22);
   }
 
   // When reading of Pin A and B is done we can interpret the result
   if (this->clockInputs > this->intervalInputs / 2
-  && this->clockInputs < this->intervalInputs / 1.5) {
-    
+      && this->clockInputs < this->intervalInputs / 1.5) {
+
     byte pinstate = (this->currentEncPinB << 1) | this->currentEncPinA;
     // Determine new state from the pins and state table.
     this->encodersState[inputIndex] = this->ttable[this->encodersState[inputIndex] & 0xf][pinstate];
@@ -542,15 +656,25 @@ inline void Motherboard9::readEncoder(byte inputIndex){
     byte result = this->encodersState[inputIndex] & 0x30;
 
     if (result == DIR_CW) {
-      this->encoders[inputIndex]--;
+//      this->encoders[inputIndex]--;
+      
+      // Calling the decrement callback if there is one
+      if(this->inputsRotaryChangeCallback[inputIndex] != nullptr){
+        this->inputsRotaryChangeCallback[inputIndex](false);
+      }
     } else if (result == DIR_CCW) {
-      this->encoders[inputIndex]++;
+//      this->encoders[inputIndex]++;
+      
+      // Calling the decrement callback if there is one
+      if(this->inputsRotaryChangeCallback[inputIndex] != nullptr){
+        this->inputsRotaryChangeCallback[inputIndex](true);
+      }
     }
 
     // Setting the main multiplexer on encoder's buttons
     this->setMainMuxOnEncoders2();
-    byte r0 = bitRead(columnNumber, 0);   
-    byte r1 = bitRead(columnNumber, 1);    
+    byte r0 = bitRead(columnNumber, 0);
+    byte r1 = bitRead(columnNumber, 1);
     byte r2 = bitRead(columnNumber, 2);
     digitalWrite(5, r0);
     digitalWrite(9, r1);
@@ -558,8 +682,72 @@ inline void Motherboard9::readEncoder(byte inputIndex){
   }
 
   // Giving time for the multiplexer to switch to Pin B
-  if (this->clockInputs > this->intervalInputs / 1.5){
-    this->encodersSwitch[inputIndex] = digitalRead(22);
+  if (this->clockInputs > this->intervalInputs / 1.5) {
+//    this->encodersSwitch[inputIndex] = digitalRead(22);
+
+    // Reading the new value
+    bool newReading = digitalRead(22);
+  
+    // If there is a short or a long press callback on that input
+    if(this->inputsPressDownCallback[inputIndex] != nullptr ||
+       this->inputsPressUpCallback[inputIndex] != nullptr ||
+       this->inputsLongPressDownCallback[inputIndex] != nullptr ||
+       this->inputsLongPressUpCallback[inputIndex] != nullptr){
+        
+      // Inverted logic, 0 = button pushed
+      // If previous value is not pushed and now is pushed
+      // So if it's pushed
+      if(this->encodersSwitch[inputIndex] && !newReading){ 
+        // Start the counter of that input
+        this->inputsPressTime[inputIndex] = 0;
+        this->inputsLongPressDownFired[inputIndex] = false;
+
+        // If there is a short press down callback on that input, and there is no Long Press down
+        if(this->inputsLongPressDownCallback[inputIndex] == nullptr &&
+           this->inputsPressDownCallback[inputIndex] != nullptr){
+          this->inputsPressDownCallback[inputIndex](inputIndex);
+        }
+      }
+
+      // If it stayed pressed for 200ms and Long Press Down callback hasn't been fired yet
+      if(!this->encodersSwitch[inputIndex] && !newReading){ 
+        if(this->inputsPressTime[inputIndex] >= 200 && !this->inputsLongPressDownFired[inputIndex]){
+          
+          if(this->inputsLongPressDownCallback[inputIndex] != nullptr){
+            // Fire the callback
+            this->inputsLongPressDownCallback[inputIndex](inputIndex);
+            this->inputsLongPressDownFired[inputIndex] = true;
+          }
+        }
+      }
+      
+      // If it's released
+      if(!this->encodersSwitch[inputIndex] && newReading){ 
+        // How long was it pressed
+        if(this->inputsPressTime[inputIndex] < 200){
+          // Short press
+          
+          // If there is a short press callback on that input
+          if(this->inputsPressUpCallback[inputIndex] != nullptr){
+            this->inputsPressUpCallback[inputIndex](inputIndex);
+          }
+        }else{
+          // Long press
+          
+          // If there is a long press callback on that input
+          if(this->inputsLongPressUpCallback[inputIndex] != nullptr){
+            this->inputsLongPressUpCallback[inputIndex](inputIndex);
+          }else if(this->inputsPressUpCallback[inputIndex] != nullptr){
+            // If the input was pressed for a long time but there is only a short press callback
+            // the short press callback should still be called
+            this->inputsPressUpCallback[inputIndex](inputIndex);
+          }
+        }
+      }
+    }
+  
+    // Updating the value
+    this->encodersSwitch[inputIndex] = newReading;
   }
 }
 
@@ -583,24 +771,49 @@ inline void Motherboard9::readMidiChannel(){
 }
 
 /**
- * Set a led status
+ * Set one LED
  */
-inline void Motherboard9::setDisplay(byte ledIndex, byte ledStatus){
+inline void Motherboard9::setLED(byte ledIndex, byte ledStatus) {
   this->leds[ledIndex] = ledStatus;
 }
 
+/**
+ * Set all LEDs 
+ */
+inline void Motherboard9::setAllLED(unsigned int binary, byte ledStatus) {
+  unsigned int n = binary;
+  
+  for (byte i = 0; i < this->ioNumber; i++) {
+    if(n & 1){
+      this->setLED(i, ledStatus);
+    }else{
+      this->setLED(i, 0);
+    }
+    n /= 2;
+  }
+}
 
 /**
- * Reset LEDs
+ * Toggle one LED
  */
-inline void Motherboard9::resetDisplay(){
-  for(byte i = 0; i < this->ioNumber; i++){
-    if(this->leds[i] != 4){
+inline void Motherboard9::toggleLED(byte index) {
+  if(this->leds[index] > 0){
+    this->leds[index] = 0;
+  }else{
+    this->leds[index] = 1;
+  }
+}
+
+/**
+ * Reset all LEDs
+ */
+inline void Motherboard9::resetAllLED() {
+  for (byte i = 0; i < this->ioNumber; i++) {
+    if (this->leds[i] != 4) {
       this->leds[i] = 0;
     }
   }
 }
-
 
 /**
  * Get input value
@@ -655,6 +868,66 @@ inline int Motherboard9::getAnalogMaxValue(){
 
 inline byte Motherboard9::getMidiChannel(){ 
   return this->midiChannel;
+}
+
+/**
+ * Handle press down on a button
+ */
+inline void Motherboard9::setHandlePressDown(byte inputIndex, PressDownCallback fptr){
+  // Press can only happen on a button and an encoder's switch
+  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+    this->inputsPressDownCallback[inputIndex] = fptr;
+  }
+}
+
+/**
+ * Handle press up on a button
+ */
+inline void Motherboard9::setHandlePressUp(byte inputIndex, PressUpCallback fptr){
+  // Press can only happen on a button and an encoder's switch
+  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+    this->inputsPressUpCallback[inputIndex] = fptr;
+  }
+}
+
+/**
+ * Handle long press down on a button
+ */
+inline void Motherboard9::setHandleLongPressDown(byte inputIndex, LongPressDownCallback fptr){
+  // Press can only happen on a button and an encoder's switch
+  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+    this->inputsLongPressDownCallback[inputIndex] = fptr;
+  }
+}
+
+/**
+ * Handle long press up on a button
+ */
+inline void Motherboard9::setHandleLongPressUp(byte inputIndex, LongPressUpCallback fptr){
+  // Press can only happen on a button and an encoder's switch
+  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+    this->inputsLongPressUpCallback[inputIndex] = fptr;
+  }
+}
+
+/**
+ * Handle potentiometer
+ */
+inline void Motherboard9::setHandlePotentiometerChange(byte inputIndex, PotentiometerChangeCallback fptr){
+  // Only for rotaries
+  if(this->inputs[inputIndex] == 2){
+    this->inputsPotentiometerChangeCallback[inputIndex] = fptr;
+  }
+}
+
+/**
+ * Handle rotary
+ */
+inline void Motherboard9::setHandleRotaryChange(byte inputIndex, RotaryChangeCallback fptr){
+  // Only for rotaries
+  if(this->inputs[inputIndex] == 3){
+    this->inputsRotaryChangeCallback[inputIndex] = fptr;
+  }
 }
 
 /**
