@@ -3,7 +3,11 @@
 /__|_|/ \(_  |     | |\|    | |_)|_||\|(_ |  |_| |  | / \|\|
 \_|| |\_/__) |    _|_| |    | | \| || |__)|__| | | _|_\_/| |
 
-If you enjoy my work and music please consider donating.
+PSYC03
+v1.1.0
+
+Support my work:
+https://www.paypal.com/paypalme/ghostintranslation
 
 https://www.ghostintranslation.com/
 https://ghostintranslation.bandcamp.com/
@@ -21,23 +25,26 @@ https://github.com/ghostintranslation
 Psyc03 * psyc03 = Psyc03::getInstance();
 
 AudioOutputI2S  i2s2;
+AudioOutputUSB usb;
 AudioConnection patchCord1(*psyc03->getOutput(), 0, i2s2, 0);
 AudioConnection patchCord2(*psyc03->getOutput(), 0, i2s2, 1);
+AudioConnection patchCord3(*psyc03->getOutput(), 0, usb, 0);
+AudioConnection patchCord4(*psyc03->getOutput(), 0, usb, 1);
 AudioControlSGTL5000 sgtl5000_1;
     
 void setup() {
   Serial.begin(115200);
   
+  while (!Serial && millis() < 2500); // wait for serial monitor
+
   psyc03->init();
 
   // Audio connections require memory to work.
   AudioMemory(40);
 
   sgtl5000_1.enable();
-  sgtl5000_1.volume(0.1);
+  sgtl5000_1.volume(0.5);
   
-  while (!Serial && millis() < 2500); // wait for serial monitor
-
   // Starting sequence
   Serial.println("Ready!");
 }
