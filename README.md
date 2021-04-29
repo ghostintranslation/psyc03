@@ -141,7 +141,7 @@ These settings can be changed in the code or via the web editor: http://ghostint
 
 The MIDI input and output jacks are directly connected to the Teensy serial input and output. That means there is not protection against voltage or current. It is primarily ment to connect 2 of these modules, or 2 Teensy together. If you want to connect something else to it make sure to provide a maximum of 3.3v and 250 mA.
 
-# About me
+## About me
 You can find me on Bandcamp, Instagram, Youtube and my own site:
 
 https://ghostintranslation.bandcamp.com/
@@ -152,7 +152,7 @@ https://www.youtube.com/channel/UCcyUTGTM-hGLIz4194Inxyw
 
 https://www.ghostintranslation.com/
 
-# Support
+## Support
 To support my work:<br>
 https://www.paypal.com/paypalme/ghostintranslation
 
