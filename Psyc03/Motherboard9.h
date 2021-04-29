@@ -1,16 +1,143 @@
 #ifndef Motherboard9_h
 #define Motherboard9_h
 
+#include <vector> // This could be replaced with a custom type to reduce the program size
+#include <EEPROM.h>
+#include <MIDI.h>
+MIDI_CREATE_DEFAULT_INSTANCE(); // MIDI library init
+
 /*
  * Motherboard9
- * v1.1.1
+ * v1.4.1
  */
+
+enum InputType {
+  None = 0,
+  Button = 1,
+  Potentiometer = 2,
+  RotaryEncoder = 3
+};
+
 class Motherboard9{
   
   private:
+    static const byte midiControlsListSize = 64;
+
+    // MidiControl type
+    struct MidiControl{
+      char controlName[20];
+      byte midiCC = 0;
+      byte midiChannel = 0;
+    };
+
+    // Config
+    struct Config {
+      // The serializable version of the config
+      // Basically a duplicate but with a fixed size array instead of a vector or pointer array
+      struct SerializableConfig {
+        char deviceName[20] = "";
+        byte midiChannel = 0;
+        MidiControl midiControlsArray[midiControlsListSize] = {};
+      };
+      
+      char deviceName[20] = "Motherboard9";
+      byte midiChannel = 0;
+      std::vector<MidiControl> midiControls = {};
+      
+      void save(){
+        Serial.println("Saving config");
+        SerializableConfig conf = {
+          deviceName: {},
+          midiChannel: 0,
+          {}
+        };
+
+        // Set the Midi channel
+        strcpy(conf.deviceName, this->deviceName);
+        conf.midiChannel = this->midiChannel;
+
+        // Set the Midi controls
+        byte i=0;
+        for(MidiControl mc : this->midiControls) {
+          MidiControlChangeCallback *c = Motherboard9::getInstance()->getMidiControlChangeCallback(mc.controlName);
+          if(c != nullptr && c->callback != nullptr){
+            conf.midiControlsArray[i] = mc;
+            i++;
+          }
+        }
+        
+        // Clear the memory
+        for (unsigned int i = 0 ; i < EEPROM.length() ; i++) {
+          EEPROM.write(i, 0);
+        }
+
+        // Save in memory
+        EEPROM.put( 0, conf );
+        delay(10);
+      }
+
+      void load(){
+        SerializableConfig conf = {
+          deviceName: {},
+          midiChannel: 0,
+          {},
+        };
+
+        EEPROM.get( 0, conf);
+        delay(10);
+        
+        // If the current device name is different than what's in memory,
+        // erase the memory
+        if (strcmp(this->deviceName, conf.deviceName) != 0){
+          Serial.println("Device name does not match : Erasing memory");
+          for (int i = 0 ; i < EEPROM.length() ; i++) {
+            EEPROM.write(i, 0);
+          }
+          this->save();
+        }
+
+        this->midiChannel = conf.midiChannel;
+
+        this->midiControls.clear();
+        for(byte i=0; i<midiControlsListSize; i++){
+          if(conf.midiControlsArray[i].controlName[0] != 0 &&
+             conf.midiControlsArray[i].midiChannel != 255){
+            this->midiControls.push_back(conf.midiControlsArray[i]);
+          }
+        }  
+      }
+
+      String toJSON(){
+        String json = "{\"name\":\"";
+        json += this->deviceName;
+        json += "\",";
+        json += "\"midiChannel\":\"";
+        json += this->midiChannel;
+        json += "\",";
+        json += "\"midi\":[";
+
+        bool hasAtLeastOneEntry = false;
+        for(MidiControl mc : this->midiControls) {
+          if(mc.controlName[0] != 0){
+            hasAtLeastOneEntry = true;
+            json += "{\"name\":\"" + (String)mc.controlName + "\", \"midiCC\":\"" + mc.midiCC + "\", \"midiChannel\":\"" + mc.midiChannel + "\"},";
+          }
+        }
+        if(hasAtLeastOneEntry){
+          // Removing last comma
+          json.remove(json.length()-1,1);
+        }
+        json += "]}";
+
+        return json;
+      }
+    } config;
+    
+    // Singleton
     static Motherboard9 *instance;
     Motherboard9();
     
+    // Global states
     byte currentRow = 0;
     byte currentLed = 0;
     byte currentInput = 0;
@@ -19,16 +146,25 @@ class Motherboard9{
     byte analogResolution = 10;
     byte midiChannel = 0;
     
-    byte *inputs;
+    // Inputs
+    InputType *inputs;
+    
+    // LEDs
     byte *leds;
+    byte *ledsBrightness;
     unsigned int *ledsDuration;
     // Buttons
     bool *buttons;
     // Potentiometers
-    unsigned int *potentiometers;
-    unsigned int *potentiometersPrevious;
+    float *potentiometers;
+    unsigned int *potentiometersTarget;
+    float *potentiometersPrevious;
+    elapsedMicros clockUpdatePotentiometers;
+    byte updatePotentiometersMillis = 50;
+    float potentiometersSmoothness = 1;
     // For smoothing purposes
     unsigned int *potentiometersTemp;
+    unsigned int *potentiometersTempPrevious;
     byte *potentiometersReadings;
 
     // Encoders
@@ -73,7 +209,7 @@ class Motherboard9{
     elapsedMicros clockMain;
     const unsigned int intervalClockMain = 5000;
     // Leds clocks
-    const unsigned int intervalDisplay = 10;
+    const unsigned int intervalDisplay = 1000;
     elapsedMicros clockDisplay;
     const unsigned int intervalDisplayFlash = 400;
     elapsedMillis clockDisplayFlash;
@@ -92,11 +228,38 @@ class Motherboard9{
     LongPressUpCallback *inputsLongPressUpCallback;
     elapsedMillis *inputsPressTime;
     bool *inputsLongPressDownFired;
-    using PotentiometerChangeCallback = void (*)(byte, unsigned int, int);
+    using PotentiometerChangeCallback = void (*)(byte, float, int);
     PotentiometerChangeCallback *inputsPotentiometerChangeCallback;
     using RotaryChangeCallback = void (*)(bool);
     RotaryChangeCallback *inputsRotaryChangeCallback;
 
+    // Callbacks triggers
+    void triggerPressCallbacks(byte inputIndex, bool value);
+    void triggerPotentiometerChangeCallback(byte inputIndex, float value, unsigned int diff);
+    void triggerRotaryChangeCallback(byte inputIndex, bool value);
+
+    // MIDI Callbacks
+    using MidiNoteOnCallback = void (*)(byte, byte, byte);
+    MidiNoteOnCallback midiNoteOnCallback;
+    using MidiNoteOffCallback = void (*)(byte, byte, byte);
+    MidiNoteOffCallback midiNoteOffCallback;
+    using GlobalMidiControlChangeCallback = void (*)(byte, byte, byte);
+    GlobalMidiControlChangeCallback globalMidiControlChangeCallback = nullptr;
+    using MidiSysExCallback = void (*)(const uint8_t*, uint16_t, bool);
+    MidiSysExCallback midiSysExCallback = nullptr;
+    using MidiControlChangeCallbackFunction = void (*)(byte, byte, byte);
+    struct MidiControlChangeCallback{
+      String controlName = "";
+      MidiControlChangeCallbackFunction callback = nullptr;
+    };
+    std::vector<MidiControlChangeCallback> midiControlChangeCallbacks;
+    MidiControlChangeCallback *getMidiControlChangeCallback(String name);
+    
+    // Handle MIDI
+    static void handleMidiSysEx(const uint8_t* data, uint16_t length, bool last);
+    static void handleMidiControlChange(byte channel, byte control, byte value);
+
+    // Inputs/Outputs
     void updateDisplay();
     void iterateDisplay();
     void iterateInputs();
@@ -117,16 +280,21 @@ class Motherboard9{
     
   public:
     static Motherboard9 *getInstance();
-    void init(byte *inputs);
+    void init(String deviceName, std::initializer_list<InputType> inputs);
     void update();
-    void setLED(byte ledIndex, byte ledStatus);
-    void setAllLED(unsigned int binary, byte ledStatus);
+    
+    void setLED(byte ledIndex, byte ledStatus, byte ledBrightness=255);
+    void setAllLED(unsigned int binary, byte ledStatus);  
     void toggleLED(byte index);
     void resetAllLED();
+    void writeLED(byte index);
+    void initSequence();
+    void setPotentiometer(byte index, unsigned int value);
+    void setPotentiometersSmoothness(byte smoothness);
     int getInput(byte index);
     bool getEncoderSwitch(byte index);
-    int getAnalogMaxValue();
-    int getAnalogMinValue();
+    unsigned int getAnalogMaxValue();
+    unsigned int getAnalogMinValue();
     byte getMidiChannel();
     
     // Callbacks
@@ -136,6 +304,14 @@ class Motherboard9{
     void setHandleLongPressUp(byte inputIndex, LongPressUpCallback fptr);
     void setHandlePotentiometerChange(byte inputIndex, PotentiometerChangeCallback fptr);
     void setHandleRotaryChange(byte inputIndex, RotaryChangeCallback fptr);
+
+    // MIDI Callbacks
+    void setHandleMidiNoteOn(MidiNoteOnCallback fptr);
+    void setHandleMidiNoteOff(MidiNoteOffCallback fptr);
+    void setHandleGlobalMidiControlChange(GlobalMidiControlChangeCallback fptr);
+    void setHandleMidiControlChange(byte control, String controlName, MidiControlChangeCallbackFunction fptr);
+    void setHandleMidiControlChange(byte midiChannel, byte midiCC, String controlName, MidiControlChangeCallbackFunction fptr);
+    void setHandleMidiSysEx(MidiSysExCallback fptr);
 };
 
 // Instance pre init
@@ -146,14 +322,16 @@ Motherboard9 * Motherboard9::instance = nullptr;
  */
 inline Motherboard9::Motherboard9(){
   this->ioNumber = 3 * this->columnsNumber;
-
-  this->inputs = new byte[this->ioNumber];
+  this->inputs = new InputType[this->ioNumber];
   this->leds = new byte[this->ioNumber];
+  this->ledsBrightness = new byte[this->ioNumber];
   this->ledsDuration = new unsigned int[this->ioNumber];
   this->buttons = new bool[this->ioNumber];
-  this->potentiometers = new unsigned int[this->ioNumber];
-  this->potentiometersPrevious = new unsigned int[this->ioNumber];
+  this->potentiometers = new float[this->ioNumber];
+  this->potentiometersPrevious = new float[this->ioNumber];
+  this->potentiometersTarget = new unsigned int[this->ioNumber];
   this->potentiometersTemp = new unsigned int[this->ioNumber];
+  this->potentiometersTempPrevious = new unsigned int[this->ioNumber];
   this->potentiometersReadings = new byte[this->ioNumber];
   this->encoders = new int[this->ioNumber];
   this->encodersState = new byte[this->ioNumber];
@@ -168,13 +346,16 @@ inline Motherboard9::Motherboard9(){
   this->inputsRotaryChangeCallback = new RotaryChangeCallback[this->ioNumber];
 
   for(byte i = 0; i < this->ioNumber; i++){
-    this->inputs[i] = 0;
+    this->inputs[i] = None;
     this->leds[i] = 0;
+    this->ledsBrightness[i] = 255;
     this->ledsDuration[i] = 0;
     this->buttons[i] = true;
     this->potentiometers[i] = 0;
-    this->potentiometersPrevious[i] = 0;
+    this->potentiometersPrevious[i] = 1;
+    this->potentiometersTarget[i] = 0;
     this->potentiometersTemp[i] = 0;
+    this->potentiometersTempPrevious[i] = 0;
     this->potentiometersReadings[i] = 0;
     this->encoders[i] = 0;
     this->encodersState[i] = 0;
@@ -188,13 +369,12 @@ inline Motherboard9::Motherboard9(){
     this->inputsPotentiometerChangeCallback[i] = nullptr;
     this->inputsRotaryChangeCallback[i] = nullptr;
   }
-
 }
 
 /**
  * Singleton instance
  */
-inline Motherboard9 *Motherboard9::getInstance()    {
+inline Motherboard9 *Motherboard9::getInstance() {
   if (!instance)
      instance = new Motherboard9;
   return instance;
@@ -203,10 +383,12 @@ inline Motherboard9 *Motherboard9::getInstance()    {
 /**
  * Init
  */
-inline void Motherboard9::init(byte *inputs){
+inline void Motherboard9::init(String deviceName, std::initializer_list<InputType> inputs) {
   // Init of the inputs
-  for(byte i = 0; i < this->ioNumber; i++){
-    this->inputs[i] = inputs[i];
+  byte i = 0;
+  for(auto input : inputs){
+    this->inputs[i] = input;
+    i++;
   }
   
   // Main multiplexer
@@ -232,14 +414,13 @@ inline void Motherboard9::init(byte *inputs){
   this->readMidiChannel();
   
   // Init sequence
-  for(byte i = 0; i<this->ioNumber; i++){
-    this->setLED(i, 1);
-    this->iterateDisplay();
-    this->updateDisplay();
-    delay(50);
-  }
-  this->resetAllLED();
-  this->updateDisplay();
+  this->initSequence();
+
+  // MIDI init
+  MIDI.setHandleControlChange(this->handleMidiControlChange);
+  MIDI.begin();
+  usbMIDI.setHandleSystemExclusive(this->handleMidiSysEx);
+  usbMIDI.setHandleControlChange(this->handleMidiControlChange);
 }
 
 /**
@@ -279,12 +460,36 @@ inline void Motherboard9::update(){
     }
   }
 
+  // Updating potentiometers smoothed values
+  if(this->clockUpdatePotentiometers > this->updatePotentiometersMillis){
+    // Every 10ms loop and update every potentiometer's value to get closer to target
+    for(byte i = 0; i < this->ioNumber; i++){
+      if(this->potentiometersTarget[i] > this->potentiometers[i]){
+        this->potentiometers[i] += (potentiometersSmoothness * (this->potentiometersTarget[i] - this->potentiometers[i]) / 1024)  / (100 / (float)this->updatePotentiometersMillis);
+      }else if(this->potentiometersTarget[i] < this->potentiometers[i]){
+        this->potentiometers[i] -= (potentiometersSmoothness * (this->potentiometers[i] - this->potentiometersTarget[i]) / 1024)  / (100 / (float)this->updatePotentiometersMillis);
+      }
+  
+      if(this->potentiometers[i] != this->potentiometersPrevious[i]){
+        // Calling the potentiometer callback if there is one
+        this->triggerPotentiometerChangeCallback(i, this->potentiometers[i], this->potentiometers[i] - this->potentiometersPrevious[i]);
+      }
+
+      this->potentiometersPrevious[i] = this->potentiometers[i];
+    }
+
+    this->clockUpdatePotentiometers = 0;
+  }
+  
   // Debug
   if (this->clockDebug >= 100) {
 //    this->printInputs();
 //    this->printLeds();
     this->clockDebug = 0;
   }
+  
+  MIDI.read();
+  usbMIDI.read();
 }
 
 
@@ -293,9 +498,9 @@ inline void Motherboard9::update(){
  */
 inline void Motherboard9::setMainMuxOnLeds(){
   pinMode(22, OUTPUT);
-  digitalWrite(2, LOW);
-  digitalWrite(3, LOW);
-  digitalWrite(4, LOW);
+  digitalWriteFast(2, LOW);
+  digitalWriteFast(3, LOW);
+  digitalWriteFast(4, LOW);
 }
 
 /**
@@ -303,9 +508,9 @@ inline void Motherboard9::setMainMuxOnLeds(){
  */
 inline void Motherboard9::setMainMuxOnLeds2(){
   pinMode(22, OUTPUT);
-  digitalWrite(2, HIGH);
-  digitalWrite(3, LOW);
-  digitalWrite(4, LOW);
+  digitalWriteFast(2, HIGH);
+  digitalWriteFast(3, LOW);
+  digitalWriteFast(4, LOW);
 }
 
 /**
@@ -313,9 +518,9 @@ inline void Motherboard9::setMainMuxOnLeds2(){
  */
 inline void Motherboard9::setMainMuxOnPots(){
   pinMode(22, INPUT);
-  digitalWrite(2, LOW);
-  digitalWrite(3, HIGH);
-  digitalWrite(4, LOW);
+  digitalWriteFast(2, LOW);
+  digitalWriteFast(3, HIGH);
+  digitalWriteFast(4, LOW);
 }
 
 /**
@@ -323,9 +528,9 @@ inline void Motherboard9::setMainMuxOnPots(){
  */
 inline void Motherboard9::setMainMuxOnPots2(){
   pinMode(22, INPUT);
-  digitalWrite(2, HIGH);
-  digitalWrite(3, HIGH);
-  digitalWrite(4, LOW);
+  digitalWriteFast(2, HIGH);
+  digitalWriteFast(3, HIGH);
+  digitalWriteFast(4, LOW);
 }
 
 /**
@@ -333,9 +538,9 @@ inline void Motherboard9::setMainMuxOnPots2(){
  */
 inline void Motherboard9::setMainMuxOnEncoders1(){
   pinMode(22, INPUT_PULLUP);
-  digitalWrite(2, LOW);
-  digitalWrite(3, LOW);
-  digitalWrite(4, HIGH);
+  digitalWriteFast(2, LOW);
+  digitalWriteFast(3, LOW);
+  digitalWriteFast(4, HIGH);
 }
 
 /**
@@ -343,9 +548,9 @@ inline void Motherboard9::setMainMuxOnEncoders1(){
  */
 inline void Motherboard9::setMainMuxOnEncoders2(){
   pinMode(22, INPUT_PULLUP);
-  digitalWrite(2, HIGH);
-  digitalWrite(3, LOW);
-  digitalWrite(4, HIGH);
+  digitalWriteFast(2, HIGH);
+  digitalWriteFast(3, LOW);
+  digitalWriteFast(4, HIGH);
 }
 
 /**
@@ -353,9 +558,9 @@ inline void Motherboard9::setMainMuxOnEncoders2(){
  */
 inline void Motherboard9::setMainMuxOnChannel(){
   pinMode(22, INPUT_PULLUP);
-  digitalWrite(2, LOW);
-  digitalWrite(3, HIGH);
-  digitalWrite(4, HIGH);
+  digitalWriteFast(2, LOW);
+  digitalWriteFast(3, HIGH);
+  digitalWriteFast(4, HIGH);
 }
 
 /**
@@ -387,43 +592,55 @@ inline void Motherboard9::updateDisplay(){
   byte r0 = bitRead(this->currentLed, 0);   
   byte r1 = bitRead(this->currentLed, 1);    
   byte r2 = bitRead(this->currentLed, 2);
-  digitalWrite(5, r0);
-  digitalWrite(9, r1);
-  digitalWrite(14, r2);
+  digitalWriteFast(5, r0);
+  digitalWriteFast(9, r1);
+  digitalWriteFast(14, r2);
 
-  if (this->leds[this->currentLed] == 1) {
-    // Solid light
-    digitalWrite(22, LOW);
-  } else if (this->leds[this->currentLed] == 2) {
-    // Slow flashing
-    digitalWrite(22, HIGH);
-    if (this->clockDisplayFlash % 400 > 200) {
-      digitalWrite(22, LOW);
-    }
-  } else if (this->leds[this->currentLed] == 3) {
-    // Fast flashing
-    digitalWrite(22, HIGH);
-    if (this->clockDisplayFlash % 200 > 100) {
-      digitalWrite(22, LOW);
-    }
-  } else if (this->leds[this->currentLed] == 4) {
-    // Solid for 50 milliseconds
-    digitalWrite(22, LOW);
-    if (this->ledsDuration[this->currentLed] == 0) {
-      this->ledsDuration[this->currentLed] = (clockDisplayFlash + 50) % intervalDisplayFlash;
-    }
-    if (this->clockDisplayFlash >= this->ledsDuration[this->currentLed]) {
-      digitalWrite(22, HIGH);
-      this->leds[this->currentLed] = 0;
-      this->ledsDuration[this->currentLed] = 0;
-    }
-  } else if (this->leds[this->currentLed] == 5) {
-    // Solid low birghtness
-    if (clockDisplayFlash % 20 > 16) {
-      digitalWrite(22, LOW);
-    }
-  } else {
-    digitalWrite(22, HIGH);
+  switch(this->leds[this->currentLed]){
+    case 1:
+      // Solid lightw
+      this->writeLED(this->currentLed);
+    break;
+    
+    case 2:
+      // Slow flashing
+      digitalWriteFast(22, HIGH);
+      if (this->clockDisplayFlash % 400 > 200) {
+        this->writeLED(this->currentLed);
+      }
+    break;
+    
+    case 3:
+      // Fast flashing
+      digitalWriteFast(22, HIGH);
+      if (this->clockDisplayFlash % 200 > 100) {
+        this->writeLED(this->currentLed);
+      }
+    break;
+
+    case 4:
+      // Solid for 50 milliseconds
+      this->writeLED(this->currentLed);
+      if (this->ledsDuration[this->currentLed] == 0) {
+        this->ledsDuration[this->currentLed] = (clockDisplayFlash + 50) % intervalDisplayFlash;
+      }
+  
+      if (this->clockDisplayFlash >= this->ledsDuration[this->currentLed]) {
+        digitalWriteFast(22, HIGH);
+        this->leds[this->currentLed] = 0;
+        this->ledsDuration[this->currentLed] = 0;
+      }
+    break;
+
+    case 5:
+      // Solid low birghtness
+      this->ledsBrightness[this->currentLed] = 128;
+      this->writeLED(this->currentLed);
+    break;
+
+    default:
+      digitalWriteFast(22, HIGH);
+    break;
   }
 }
 
@@ -480,15 +697,15 @@ inline void Motherboard9::readButton(byte inputIndex) {
   byte r0 = bitRead(columnNumber, 0);
   byte r1 = bitRead(columnNumber, 1);
   byte r2 = bitRead(columnNumber, 2);
-  digitalWrite(5, r0);
-  digitalWrite(9, r1);
-  digitalWrite(14, r2);
+  digitalWriteFast(5, r0);
+  digitalWriteFast(9, r1);
+  digitalWriteFast(14, r2);
 
   // Giving some time to the Mux and pins to switch
   if (this->clockInputs > this->intervalInputs / 1.5) {
     
     // Reading the new value
-    bool newReading = digitalRead(22);
+    bool newReading = digitalReadFast(22);
 
     // If there is a short or a long press callback on that input
     if(this->inputsPressDownCallback[inputIndex] != nullptr ||
@@ -553,6 +770,13 @@ inline void Motherboard9::readButton(byte inputIndex) {
   }
 }
 
+inline void Motherboard9::triggerPressCallbacks(byte inputIndex, bool value){
+  if(value){
+    this->inputsPressDownCallback[inputIndex](inputIndex);
+  }else{
+    this->inputsPressUpCallback[inputIndex](inputIndex);
+  }
+}
 
 /**
  * Get potentiometer value
@@ -576,22 +800,27 @@ inline void Motherboard9::readPotentiometer(byte inputIndex) {
   this->potentiometersTemp[inputIndex] += analogRead(22);
   
   if(this->potentiometersReadings[inputIndex] == 255){
-    this->potentiometers[inputIndex] = this->potentiometersTemp[inputIndex] / 255; 
-    this->potentiometers[inputIndex] = map(this->potentiometers[inputIndex], this->getAnalogMinValue(), this->getAnalogMaxValue(), 0, 1023);
-    this->potentiometers[inputIndex] = constrain(this->potentiometers[inputIndex], (unsigned int)0, (unsigned int)1023);
-    
-    if(this->potentiometers[inputIndex] != this->potentiometersPrevious[inputIndex]){
-      // Calling the potentiometer callback if there is one
-      if(this->inputsPotentiometerChangeCallback[inputIndex] != nullptr){
-        this->inputsPotentiometerChangeCallback[inputIndex](inputIndex, this->potentiometers[inputIndex], this->potentiometers[inputIndex] - this->potentiometersPrevious[inputIndex] );
-      }
+    if((int)(this->potentiometersTemp[inputIndex] / 255 - this->potentiometersTempPrevious[inputIndex] / 255) < -1
+    || (this->potentiometersTemp[inputIndex] / 255 - this->potentiometersTempPrevious[inputIndex] / 255) > 1){
+      this->setPotentiometer(inputIndex, this->potentiometersTemp[inputIndex] / 255);
+      this->potentiometersTempPrevious[inputIndex] = this->potentiometersTemp[inputIndex];
     }
     
     this->potentiometersReadings[inputIndex] = 0;
     this->potentiometersTemp[inputIndex] = 0;
-    this->potentiometersPrevious[inputIndex] = this->potentiometers[inputIndex];
   }
+}
 
+inline void Motherboard9::setPotentiometer(byte index, unsigned int value){
+  this->potentiometersTarget[index] = value;
+  this->potentiometersTarget[index] = map(this->potentiometersTarget[index], this->getAnalogMinValue(), this->getAnalogMaxValue(), 0, 1023);
+  this->potentiometersTarget[index] = constrain(this->potentiometersTarget[index], (unsigned int)0, (unsigned int)1023);
+}
+
+inline void Motherboard9::triggerPotentiometerChangeCallback(byte inputIndex, float value, unsigned int diff){
+  if(this->inputsPotentiometerChangeCallback[inputIndex] != nullptr){
+    this->inputsPotentiometerChangeCallback[inputIndex](inputIndex, value, diff);
+  }
 }
 
 /**
@@ -606,9 +835,9 @@ inline void Motherboard9::readEncoder(byte inputIndex) {
   if (this->clockInputs < this->intervalInputs / 10) {
     for (byte i = 0; i < 3; i++) {
       if (i == rowNumber) {
-        digitalWrite(15 + i, LOW);
+        digitalWriteFast(15 + i, LOW);
       } else {
-        digitalWrite(15 + i, HIGH);
+        digitalWriteFast(15 + i, HIGH);
       }
     }
     this->setMainMuxOnEncoders1();
@@ -625,11 +854,11 @@ inline void Motherboard9::readEncoder(byte inputIndex) {
     byte r0 = bitRead(muxPinA, 0);
     byte r1 = bitRead(muxPinA, 1);
     byte r2 = bitRead(muxPinA, 2);
-    digitalWrite(5, r0);
-    digitalWrite(9, r1);
-    digitalWrite(14, r2);
+    digitalWriteFast(5, r0);
+    digitalWriteFast(9, r1);
+    digitalWriteFast(14, r2);
 
-    this->currentEncPinA = digitalRead(22);
+    this->currentEncPinA = digitalReadFast(22);
   }
 
   // Giving time for the multiplexer to switch to Pin B
@@ -638,11 +867,11 @@ inline void Motherboard9::readEncoder(byte inputIndex) {
     int r0 = bitRead(muxPinB, 0);
     int r1 = bitRead(muxPinB, 1);
     int r2 = bitRead(muxPinB, 2);
-    digitalWrite(5, r0);
-    digitalWrite(9, r1);
-    digitalWrite(14, r2);
+    digitalWriteFast(5, r0);
+    digitalWriteFast(9, r1);
+    digitalWriteFast(14, r2);
 
-    this->currentEncPinB = digitalRead(22);
+    this->currentEncPinB = digitalReadFast(22);
   }
 
   // When reading of Pin A and B is done we can interpret the result
@@ -656,19 +885,15 @@ inline void Motherboard9::readEncoder(byte inputIndex) {
     byte result = this->encodersState[inputIndex] & 0x30;
 
     if (result == DIR_CW) {
-//      this->encoders[inputIndex]--;
-      
+      this->encoders[inputIndex]--;
+
       // Calling the decrement callback if there is one
-      if(this->inputsRotaryChangeCallback[inputIndex] != nullptr){
-        this->inputsRotaryChangeCallback[inputIndex](false);
-      }
+      this->triggerRotaryChangeCallback(inputIndex, false);
     } else if (result == DIR_CCW) {
-//      this->encoders[inputIndex]++;
+      this->encoders[inputIndex]++;
       
       // Calling the decrement callback if there is one
-      if(this->inputsRotaryChangeCallback[inputIndex] != nullptr){
-        this->inputsRotaryChangeCallback[inputIndex](true);
-      }
+      this->triggerRotaryChangeCallback(inputIndex, true);
     }
 
     // Setting the main multiplexer on encoder's buttons
@@ -676,17 +901,17 @@ inline void Motherboard9::readEncoder(byte inputIndex) {
     byte r0 = bitRead(columnNumber, 0);
     byte r1 = bitRead(columnNumber, 1);
     byte r2 = bitRead(columnNumber, 2);
-    digitalWrite(5, r0);
-    digitalWrite(9, r1);
-    digitalWrite(14, r2);
+    digitalWriteFast(5, r0);
+    digitalWriteFast(9, r1);
+    digitalWriteFast(14, r2);
   }
 
   // Giving time for the multiplexer to switch to Pin B
   if (this->clockInputs > this->intervalInputs / 1.5) {
-//    this->encodersSwitch[inputIndex] = digitalRead(22);
+//    this->encodersSwitch[inputIndex] = digitalReadFast(22);
 
     // Reading the new value
-    bool newReading = digitalRead(22);
+    bool newReading = digitalReadFast(22);
   
     // If there is a short or a long press callback on that input
     if(this->inputsPressDownCallback[inputIndex] != nullptr ||
@@ -751,6 +976,15 @@ inline void Motherboard9::readEncoder(byte inputIndex) {
   }
 }
 
+inline void Motherboard9::triggerRotaryChangeCallback(byte inputIndex, bool value){
+  if(this->inputsRotaryChangeCallback[inputIndex] != nullptr){
+    this->inputsRotaryChangeCallback[inputIndex](false);
+  }
+}
+
+/**
+ * Read the Midi channel from the dipswitch
+ */
 inline void Motherboard9::readMidiChannel(){
   this->setMainMuxOnChannel();
   delay(50); // Only because this function is used in Init only
@@ -760,9 +994,9 @@ inline void Motherboard9::readMidiChannel(){
     byte r0 = bitRead(i, 0);   
     byte r1 = bitRead(i, 1);    
     byte r2 = bitRead(i, 2);
-    digitalWrite(5, r0);
-    digitalWrite(9, r1);
-    digitalWrite(14, r2);
+    digitalWriteFast(5, r0);
+    digitalWriteFast(9, r1);
+    digitalWriteFast(14, r2);
     delay(5); // Only because this function is used in Init only
     byte channelBit = !digitalRead(22);
     bitWrite(midiChannel, i, channelBit);
@@ -771,10 +1005,25 @@ inline void Motherboard9::readMidiChannel(){
 }
 
 /**
- * Set one LED
+ * Set a led status
  */
-inline void Motherboard9::setLED(byte ledIndex, byte ledStatus) {
-  this->leds[ledIndex] = ledStatus;
+inline void Motherboard9::setLED(byte ledIndex, byte ledStatus, byte ledBrightness) {
+  switch(ledStatus){
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+    case 4:
+    case 5:
+    {
+      this->leds[ledIndex] = ledStatus;
+      this->ledsBrightness[ledIndex] = ledBrightness;
+    }
+    break;
+    default:
+      this->leds[ledIndex] = 0;
+    break;
+  }
 }
 
 /**
@@ -813,6 +1062,13 @@ inline void Motherboard9::resetAllLED() {
       this->leds[i] = 0;
     }
   }
+}
+
+/**
+ * Set potentiometers smoothness
+ */
+inline void Motherboard9::setPotentiometersSmoothness(byte smoothness){
+  this->potentiometersSmoothness = map((float)smoothness, 0, 255, 1, 0.05);
 }
 
 /**
@@ -855,14 +1111,14 @@ inline bool Motherboard9::getEncoderSwitch(byte index){
 /**
  * Get max analog value according to resolution
  */
-inline int Motherboard9::getAnalogMinValue(){
+inline unsigned int Motherboard9::getAnalogMinValue(){
   return 0;
 }
 
 /**
  * Get max analog value according to resolution
  */
-inline int Motherboard9::getAnalogMaxValue(){
+inline unsigned int Motherboard9::getAnalogMaxValue(){
   return (1 << this->analogResolution) - 1;
 }
 
@@ -875,7 +1131,7 @@ inline byte Motherboard9::getMidiChannel(){
  */
 inline void Motherboard9::setHandlePressDown(byte inputIndex, PressDownCallback fptr){
   // Press can only happen on a button and an encoder's switch
-  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+  if(this->inputs[inputIndex] == Button || this->inputs[inputIndex] == RotaryEncoder){
     this->inputsPressDownCallback[inputIndex] = fptr;
   }
 }
@@ -885,7 +1141,7 @@ inline void Motherboard9::setHandlePressDown(byte inputIndex, PressDownCallback 
  */
 inline void Motherboard9::setHandlePressUp(byte inputIndex, PressUpCallback fptr){
   // Press can only happen on a button and an encoder's switch
-  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+  if(this->inputs[inputIndex] == Button || this->inputs[inputIndex] == RotaryEncoder){
     this->inputsPressUpCallback[inputIndex] = fptr;
   }
 }
@@ -895,7 +1151,7 @@ inline void Motherboard9::setHandlePressUp(byte inputIndex, PressUpCallback fptr
  */
 inline void Motherboard9::setHandleLongPressDown(byte inputIndex, LongPressDownCallback fptr){
   // Press can only happen on a button and an encoder's switch
-  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+  if(this->inputs[inputIndex] == Button || this->inputs[inputIndex] == RotaryEncoder){
     this->inputsLongPressDownCallback[inputIndex] = fptr;
   }
 }
@@ -905,7 +1161,7 @@ inline void Motherboard9::setHandleLongPressDown(byte inputIndex, LongPressDownC
  */
 inline void Motherboard9::setHandleLongPressUp(byte inputIndex, LongPressUpCallback fptr){
   // Press can only happen on a button and an encoder's switch
-  if(this->inputs[inputIndex] == 1 || this->inputs[inputIndex] == 3){
+  if(this->inputs[inputIndex] == Button || this->inputs[inputIndex] == RotaryEncoder){
     this->inputsLongPressUpCallback[inputIndex] = fptr;
   }
 }
@@ -915,7 +1171,7 @@ inline void Motherboard9::setHandleLongPressUp(byte inputIndex, LongPressUpCallb
  */
 inline void Motherboard9::setHandlePotentiometerChange(byte inputIndex, PotentiometerChangeCallback fptr){
   // Only for rotaries
-  if(this->inputs[inputIndex] == 2){
+  if(this->inputs[inputIndex] == Potentiometer){
     this->inputsPotentiometerChangeCallback[inputIndex] = fptr;
   }
 }
@@ -925,9 +1181,244 @@ inline void Motherboard9::setHandlePotentiometerChange(byte inputIndex, Potentio
  */
 inline void Motherboard9::setHandleRotaryChange(byte inputIndex, RotaryChangeCallback fptr){
   // Only for rotaries
-  if(this->inputs[inputIndex] == 3){
+  if(this->inputs[inputIndex] == RotaryEncoder){
     this->inputsRotaryChangeCallback[inputIndex] = fptr;
   }
+}
+
+inline void Motherboard9::writeLED(byte index){
+  byte reversedBrightness = map(this->ledsBrightness[index], 0, 255, 255, 0);  
+  analogWrite(22, reversedBrightness); 
+}
+
+/**
+ * Handle MIDI note on
+ */
+inline void Motherboard9::setHandleMidiNoteOn(MidiNoteOnCallback fptr){
+  this->midiNoteOnCallback = fptr;
+  MIDI.setHandleNoteOn(fptr);
+  usbMIDI.setHandleNoteOn(fptr);
+}
+
+/**
+ * Handle MIDI note off
+ */
+inline void Motherboard9::setHandleMidiNoteOff(MidiNoteOffCallback fptr){
+  this->midiNoteOffCallback = fptr;
+  MIDI.setHandleNoteOff(fptr);
+  usbMIDI.setHandleNoteOff(fptr);
+}
+
+/**
+ * Handle MIDI control change
+ */
+inline void Motherboard9::setHandleGlobalMidiControlChange(GlobalMidiControlChangeCallback fptr){
+  this->globalMidiControlChangeCallback = fptr;
+}
+
+/**
+ * Handle MIDI control change
+ */
+inline void Motherboard9::setHandleMidiControlChange(byte control, String controlName, MidiControlChangeCallbackFunction fptr){
+  this->setHandleMidiControlChange(0, control, controlName, fptr);
+}
+
+/**
+ * Set a callback to a MIDI control change message
+ */
+inline void Motherboard9::setHandleMidiControlChange(byte channel, byte control, String controlName, MidiControlChangeCallbackFunction fptr){
+  // Init the midi control with what is set in the code
+  MidiControl midiControl = {
+    "",
+    midiCC: control,
+    midiChannel: channel
+  };
+  //  strcpy(midiControl.controlName, controlName);
+  controlName.toCharArray(midiControl.controlName, 20);
+  
+  // Check if something is defined in the config for that callback
+  bool midiControlFromConfig = false;
+  for(MidiControl c : Motherboard9::getInstance()->config.midiControls) {
+    char controlNameCharArray[20];
+    controlName.toCharArray(controlNameCharArray, 20);
+
+    if(strcmp(c.controlName, controlNameCharArray) == 0){
+      // This callback exists in the config so we'll use it instead
+      midiControl = c;
+      midiControlFromConfig = true;
+      break;
+    }
+  }
+
+  // Only if the MidiControl is not yet in the config we add it
+  // The MidiControl would be in the config if it was loaded from memory on the Init
+  if(!midiControlFromConfig){
+    this->config.midiControls.push_back(midiControl);
+  }
+  // Add the callback to the list
+  this->midiControlChangeCallbacks.push_back({
+    controlName: controlName,
+    callback: fptr
+  });
+}
+
+/**
+ * Handle received MIDI Control Change message
+ */
+inline void Motherboard9::handleMidiControlChange(byte channel, byte control, byte value){  
+  // Internal midi channel is from 1 to 16
+  // Incoming channel is from 1 to 16
+  // Callbacks channel is from 0 to 16, 0 meaning bounded with internal midi channel
+  
+  // If the incoming message's channel corresponds to the board's channel 
+  if(Motherboard9::getInstance()->getMidiChannel() == channel){
+    // Callbacks on internal channel 0 are to be triggered on the board's channel
+    for(MidiControl mc : Motherboard9::getInstance()->config.midiControls) {
+      if(mc.midiChannel == 0 && mc.midiCC == control){
+        MidiControlChangeCallback *c = Motherboard9::getInstance()->getMidiControlChangeCallback(mc.controlName);
+        if(c != nullptr && c->callback != nullptr){
+          c->callback(0, control, value);
+        }
+      }
+    }
+  }
+
+  // Triggering any existing callback on the incoming channel and control
+  for(MidiControl mc : Motherboard9::getInstance()->config.midiControls) {
+    if(mc.midiChannel == channel && mc.midiCC == control){
+      MidiControlChangeCallback *c = Motherboard9::getInstance()->getMidiControlChangeCallback(mc.controlName);
+      if(c != nullptr && c->callback != nullptr){
+        c->callback(channel, control, value);
+      }
+    }
+  }
+
+  // Triggering the global callback
+  if(Motherboard9::getInstance()->globalMidiControlChangeCallback != nullptr){
+    Motherboard9::getInstance()->globalMidiControlChangeCallback(channel, control, value);
+  }
+}
+
+/**
+ * Handle MIDI SysEx
+ */
+inline void Motherboard9::setHandleMidiSysEx(MidiSysExCallback fptr){
+  this->midiSysExCallback = fptr;
+}
+
+/**
+ * Handle MIDI SysEx message
+ */
+inline void Motherboard9::handleMidiSysEx(const uint8_t* data, uint16_t length, bool last){
+  switch(data[1]){
+    // Device config request
+    // Sending reply in a JSON string
+    case 0:
+    {
+      String response = Motherboard9::getInstance()->config.toJSON();
+//      Serial.println(response);
+
+      byte byteResponse[response.length()];
+      response.getBytes(byteResponse, response.length()+1);
+      byte byteTypedResponse[sizeof(byteResponse)+1];
+      byteTypedResponse[0] = 0;
+      for(unsigned int i=0; i<sizeof(byteResponse); i++){
+        byteTypedResponse[i+1] = byteResponse[i];
+      }
+      usbMIDI.sendSysEx(sizeof(byteTypedResponse), byteTypedResponse, false);
+    }
+    break;
+
+    // Device config import
+    case 1:
+    {
+      // The response format is:
+      // 1 [Callback_Name_Variable_Length] [midiCC] [midiChannel]
+      // 
+      // Since the name's length is variable, and there is no delimiting character surrounding it,
+      // one way of finding out if this message is for that callback is to search for known names in the message
+
+      bool somethingToSave = false;
+      
+      // Converts the response into string
+      String dataString = String((char *)data);
+
+      // Loop through all known callbacks and search each callback's name in the response
+      // If the name is found then the message is meant for that callback
+      for(MidiControl& mc: Motherboard9::getInstance()->config.midiControls) {
+        MidiControlChangeCallback *c = Motherboard9::getInstance()->getMidiControlChangeCallback(mc.controlName);
+        if(c != nullptr && c->callback != nullptr){
+          int indexOfCallbackName = dataString.lastIndexOf(mc.controlName, 4);
+          if(indexOfCallbackName > -1){
+            // This callback's name was found in the response
+
+            if(mc.midiCC != data[2 + String(mc.controlName).length()] ||
+               mc.midiChannel != data[2 + String(mc.controlName).length() + 1]){
+                // Save only if there is actually a change
+                somethingToSave = true;
+                
+                mc.midiCC = data[2 + String(mc.controlName).length()];
+                mc.midiChannel = data[2 + String(mc.controlName).length() + 1];
+               }
+            break;
+          }
+        }
+      }
+
+      // Saving the config
+      if(somethingToSave){
+        Motherboard9::getInstance()->config.save();
+      
+        // Sending OK
+        byte byteMessage[2] = {1,1};
+        usbMIDI.sendSysEx(2, byteMessage, false);
+
+        Motherboard9::getInstance()->initSequence();
+      }else{
+        // Sending KO
+        byte byteMessage[2] = {1,0};
+        usbMIDI.sendSysEx(2, byteMessage, false);
+      }
+    }
+    break;
+    
+    default:
+    break;
+  }
+
+  if(Motherboard9::getInstance()->midiSysExCallback != nullptr){
+    Motherboard9::getInstance()->midiSysExCallback(data, length, last);
+  }
+}
+
+/**
+ * Get MIDI Control Change Callback
+ * @param (String) name The name of the callback function
+ * @return (MidiControlChangeCallback) The callback function
+ */
+inline Motherboard9::MidiControlChangeCallback *Motherboard9::getMidiControlChangeCallback(String name){
+  for(MidiControlChangeCallback &c : Motherboard9::getInstance()->midiControlChangeCallbacks) {
+    if(c.controlName == name){
+      return &c;
+    }
+  }
+
+  return nullptr;
+}
+
+/**
+ * LEDs init sequence
+ */
+inline void Motherboard9::initSequence(){
+  // Init sequence
+  for(byte i = 0; i<this->ioNumber; i++){
+    this->setLED(i, 1);
+    this->iterateDisplay();
+    this->updateDisplay();
+    delay(50);
+  }
+  this->resetAllLED();
+  this->updateDisplay();
 }
 
 /**
