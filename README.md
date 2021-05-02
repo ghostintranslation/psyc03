@@ -4,7 +4,7 @@
 
 PSYC03, alias PerCussive SYnth 03, is the result of the combination of a Syncussion and a TB303, an acid percussive synth.
 
-It is based on [Motherboard9](https://github.com/ghostintranslation/motherboard9), see in there for schematics.
+It is based on [Motherboard](https://github.com/ghostintranslation/motherboard), my modular platform, see in there for schematics.
 
 You can get the PCBs and front panel here:<br/>
 https://ghostintranslation.bandcamp.com/merch/psyc03-panel-and-pcb
@@ -79,7 +79,7 @@ Note:
 
 Note: Be careful how you place the potentiometers:
 
-<img src="https://github.com/ghostintranslation/motherboard6/blob/master/input-traces.png" width="200px"/>
+<img src="https://github.com/ghostintranslation/motherboard/raw/main/input-traces.png" width="200px"/>
 
 ### Firmware
 

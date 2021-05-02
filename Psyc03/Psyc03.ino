@@ -4,7 +4,7 @@
 \_|| |\_/__) |    _|_| |    | | \| || |__)|__| | | _|_\_/| |
 
 PSYC03
-v1.1.0
+v1.2.0
 
 Support my work:
 https://www.paypal.com/paypalme/ghostintranslation
@@ -18,10 +18,10 @@ https://github.com/ghostintranslation
 
 #include <Audio.h>
 
-#include "Motherboard9.h"
+#include "Motherboard.h"
 #include "Psyc03.h"
 
-// Instanciation of Psyc03
+// Instanciation of PSYC03
 Psyc03 * psyc03 = Psyc03::getInstance();
 
 AudioOutputI2S  i2s2;
@@ -50,5 +50,6 @@ void setup() {
 }
 
 void loop() {
+  // PYCS03 update
   psyc03->update();
 }

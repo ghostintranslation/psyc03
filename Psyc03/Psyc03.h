@@ -1,7 +1,7 @@
 #ifndef Psyc03_h
 #define Psyc03_h
 
-#include "Motherboard9.h"
+#include "Motherboard.h"
 
 /*
 // GUItool: begin automatically generated code
@@ -73,7 +73,7 @@ class Psyc03{
     AudioMixer4 *output;
 
     // Motherboard
-    Motherboard9 *device;
+    Motherboard *device;
 
     // Params
     unsigned int tune = 30;
@@ -141,8 +141,6 @@ Psyc03 * Psyc03::instance = nullptr;
  * Constructor
  */
 inline Psyc03::Psyc03(){
-  this->device = Motherboard9::getInstance();
-  
   this->peak1 = new AudioAnalyzePeak();
 
   this->lfo = new AudioSynthWaveformSine();
@@ -239,7 +237,7 @@ inline Psyc03 *Psyc03::getInstance()    {
 }
 
 inline void Psyc03::init(){
-  device->init(
+  this->device = Motherboard::init(
     "PSYC03",
     {
       Potentiometer, Potentiometer, Potentiometer,
